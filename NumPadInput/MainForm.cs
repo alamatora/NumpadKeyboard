@@ -63,72 +63,7 @@ namespace NumPadInput {
 
                 if(wmKeyboard == KeyboardMessage.WM_KEYDOWN) {
                     tbLog.AppendText("Key is down!\r\n");
-                    if(!vkCode.Equals(currentVKCode)) {     //TODO: Fix - currentVK code refers to letter, not new key input
-                        log = string.Format("CurrentVKCode = {0}\r\n", currentVKCode);
-                        tbLog.AppendText(log);
-                        tbLog.AppendText("Test\r\n");
-                        if(delayTimer != null && delayTimer.Enabled == true) {
-                            tbLog.AppendText("Stopping timer\r\n");
-                            delayTimer.Stop();
-                        }
-                        if(currentVKCode != 0) {
-                            tbLog.AppendText("Inputing new character!\r\n");
-                            RemoveGlobalLLKeyboardHook();
-                            InputSimulator.SimulateKeyPress((VirtualKeyCode) currentVKCode);
-                            SetGlobalLLKeyboardHook();
-                            currentVKCode = 0;
-                        }
-
-                        if(vkCode >= Keys.NumPad1 && vkCode <= Keys.NumPad9) {
-                            tbLog.AppendText("I got here\r\n");
-
-
-                            //switch(vkCode) {
-                            //    case Keys.NumPad7:
-                            //        currentVKCode = Keys.A;
-                            //        break;
-                            //    case Keys.NumPad8:
-                            //        currentVKCode = Keys.D;
-                            //        break;
-                            //    case Keys.NumPad9:
-                            //        currentVKCode = Keys.G;
-                            //        break;
-                            //    case Keys.NumPad4:
-                            //        currentVKCode = Keys.J;
-                            //        break;
-                            //    case Keys.NumPad5:
-                            //        currentVKCode = Keys.M;
-                            //        break;
-                            //    case Keys.NumPad6:
-                            //        currentVKCode = Keys.P;
-                            //        break;
-                            //    case Keys.NumPad1:
-                            //        currentVKCode = Keys.S;
-                            //        break;
-                            //    case Keys.NumPad2:
-                            //        currentVKCode = Keys.V;
-                            //        break;
-                            //    case Keys.NumPad3:
-                            //        currentVKCode = Keys.Y;
-                            //        break;
-                            //    default:
-                            //        currentVKCode = 0;
-                            //        break;
-                            //}
-                            delayTimer.Start();
-                            return 1;
-                        }
-                        else {
-                            tbLog.AppendText("Skipped past num switch\r\n");
-                            return NativeMethods.CallNextHookEx(hGlobalLLKeyboardHook, nCode, wParam, lParam);
-                        }
-                    }
-                    else {
-                        tbLog.AppendText("Incrementing!\r\n");
-                        currentVKCode += 1;
-                        delayTimer.Start();
-                        return 1;
-                    }
+                    return ProcessInput(vkCode, hGlobalLLKeyboardHook, nCode, wParam, lParam);
                 }
             }
             tbLog.AppendText("Somehow skipped everything\r\n");
@@ -136,8 +71,80 @@ namespace NumPadInput {
         }
         #endregion
 
+        #region Process Input
+
+        private Keys lastInput = 0;
+        private int counter = 0;
+
+        private void OutputQueuedKey() {
+
+            //Check if valid key queued
+            if(lastInput < Keys.NumPad1 || lastInput > Keys.NumPad9) {
+                return;
+            }
+
+            //Convert numpad lastInput value to int
+            int lastInputNum = (int) lastInput - 97; //NumPad1 = 0x61 = 97
+
+            //Max out counter at last assigned key
+            if(counter >= layout[lastInputNum].Length) {
+                counter = layout[lastInputNum].Length - 1;
+            }
+
+            //Determine output key using layout
+            char outputChar = layout[lastInputNum][counter];
+            Keys outputKey = (Keys) char.ToUpper(outputChar);
+
+            //Simulate keypress while avoiding getting caught in LLKB hook
+            RemoveGlobalLLKeyboardHook();
+            InputSimulator.SimulateKeyPress((VirtualKeyCode) outputKey);
+            SetGlobalLLKeyboardHook();
+
+            //Stop delayTimer if enabled
+            if(delayTimer != null && delayTimer.Enabled) {
+                delayTimer.Stop();
+            }
+
+            //Clear lastInput
+            lastInput = 0;
+            counter = 0;
+        }
+
+        private int ProcessInput(Keys vkCode, IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam) {
+
+            //If keypress is on numpad layout
+            if(vkCode >= Keys.NumPad1 && vkCode <= Keys.NumPad9) {
+                //If this is a repeated keypress
+                if(vkCode == lastInput) {
+                    //Increment counter, intercept keypress
+                    ++counter;
+                    return 1;
+                }
+
+                //New numpad keypress
+                else {
+                    //Output queued key, if any.
+                    OutputQueuedKey();
+
+                    //Store new input, start delay timer, intercept keypress
+                    lastInput = vkCode;
+                    delayTimer.Start();
+                    return 1;
+                }
+
+            }
+            //Non-mapped key pressed. Output queued key (if any), and continue to output latest keypress.
+            else {
+                OutputQueuedKey();
+                return NativeMethods.CallNextHookEx(hhk, nCode, wParam, lParam);
+            }
+        }
+
+        #endregion
+
         #region Delay Timer
-        private static double keyDelay = 1d;         //Delay in seconds
+
+        private static double keyDelay = 0.5d;         //Delay in seconds
         System.Timers.Timer delayTimer;
 
         private void SetTimer() {
@@ -148,15 +155,8 @@ namespace NumPadInput {
         }
 
         private void DelayTimer_Elapsed(object sender, ElapsedEventArgs e) {
-            if(currentVKCode != 0) {
-                RemoveGlobalLLKeyboardHook();
-                InputSimulator.SimulateKeyPress((VirtualKeyCode) currentVKCode);
-                SetGlobalLLKeyboardHook();
-                tbLog.AppendText("Timer elapsed\r\n");
-                currentVKCode = 0;
-                delayTimer.Stop();
-                tbLog.AppendText("Post dispose\r\n");
-            }
+            tbLog.AppendText("Timer elapsed\r\n");
+            OutputQueuedKey();
         }
 
         #endregion
@@ -173,6 +173,8 @@ namespace NumPadInput {
         }
 
         #endregion
+
+        #region Form Functions
 
         private void btnGlobalLLKeyboardHook_Click(object sender, EventArgs e) {
             if(hGlobalLLKeyboardHook == IntPtr.Zero) {
@@ -198,5 +200,7 @@ namespace NumPadInput {
         private void MainForm_FormClosing(object sender, FormClosingEventArgs e) {
             RemoveGlobalLLKeyboardHook();
         }
+
+        #endregion
     }
 }
